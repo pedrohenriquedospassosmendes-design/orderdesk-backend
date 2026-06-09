@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: orderdesk-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/stores
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
