@@ -1,0 +1,7 @@
+-- Exemplo. Este arquivo nao roda porque termina com .example.
+-- Para criar uma migracao real, copie para um novo arquivo .sql com o proximo numero.
+--
+-- Exemplo:
+-- V2__add_plan_type_to_stores.sql
+--
+-- ALTER TABLE store ADD COLUMN IF NOT EXISTS plan_type VARCHAR(50) DEFAULT 'FREE';
