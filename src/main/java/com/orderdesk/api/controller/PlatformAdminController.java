@@ -1,10 +1,12 @@
 package com.orderdesk.api.controller;
 
 import com.orderdesk.api.model.CustomerOrder;
+import com.orderdesk.api.model.PlatformSettings;
 import com.orderdesk.api.model.Store;
 import com.orderdesk.api.model.UserAccount;
 import com.orderdesk.api.repository.CustomerOrderRepository;
 import com.orderdesk.api.repository.ProductRepository;
+import com.orderdesk.api.repository.PlatformSettingsRepository;
 import com.orderdesk.api.repository.StoreLikeRepository;
 import com.orderdesk.api.repository.StoreRepository;
 import com.orderdesk.api.repository.StoreReviewRepository;
@@ -32,26 +34,37 @@ public class PlatformAdminController {
     private final CustomerOrderRepository orders;
     private final StoreReviewRepository reviews;
     private final StoreLikeRepository likes;
+    private final PlatformSettingsRepository platformSettings;
     private final Set<String> adminTokens = ConcurrentHashMap.newKeySet();
 
     @Value("${orderdesk.platform-admin.password:admin123}")
     private String adminPassword;
 
-    public PlatformAdminController(UserAccountRepository users, StoreRepository stores, ProductRepository products, CustomerOrderRepository orders, StoreReviewRepository reviews, StoreLikeRepository likes) {
+    public PlatformAdminController(UserAccountRepository users, StoreRepository stores, ProductRepository products, CustomerOrderRepository orders, StoreReviewRepository reviews, StoreLikeRepository likes, PlatformSettingsRepository platformSettings) {
         this.users = users;
         this.stores = stores;
         this.products = products;
         this.orders = orders;
         this.reviews = reviews;
         this.likes = likes;
+        this.platformSettings = platformSettings;
     }
 
     public record AdminLoginRequest(String password) {}
-    public record AdminStoreUpdateRequest(String name, String category, String city, String state, String countryName,
+    public record AdminStoreUpdateRequest(String name, String slug, String category, String whatsapp, String contactType,
+                                          String contactValue, String websiteUrl, String description, String address,
+                                          String city, String state, String countryCode, String countryName,
+                                          String openingHours, String openingTime, String closingTime,
+                                          Boolean openWeekdays, Boolean openSaturday, Boolean openSunday,
+                                          Boolean forceOpen, Boolean forceClosed, String deliveryTime,
+                                          BigDecimal deliveryFee, BigDecimal minimumOrderAmount, String paymentMethods,
                                           String storeStatus, String billingStatus, Boolean active,
                                           Boolean blockedForBilling, String planType, Integer monthlyOrderLimit,
                                           Integer currentMonthOrders) {}
     public record AdminAccountUpdateRequest(String name, String accountType, String platformRole, String city, String state, String countryName) {}
+    public record PlatformSettingsRequest(Boolean siteOpen, Boolean globalNoticeActive, String globalNoticeTitle,
+                                          String globalNoticeMessage, String globalNoticeType, String closedTitle,
+                                          String closedMessage) {}
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody AdminLoginRequest request) {
@@ -92,7 +105,29 @@ public class PlatformAdminController {
         result.put("billingBlockedStores", stores.findAll().stream()
                 .filter(store -> store.isBlockedForBilling() || "BLOCKED".equalsIgnoreCase(store.getBillingStatus()) || "LIMIT_REACHED".equalsIgnoreCase(store.getBillingStatus()))
                 .count());
+        result.put("siteOpen", settings().isSiteOpen());
+        result.put("globalNoticeActive", settings().isGlobalNoticeActive());
         return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/settings")
+    public ResponseEntity<?> settings(@RequestParam String token) {
+        if (!isAdmin(token)) return forbidden();
+        return ResponseEntity.ok(settings());
+    }
+
+    @PatchMapping("/settings")
+    public ResponseEntity<?> updateSettings(@RequestParam String token, @RequestBody PlatformSettingsRequest request) {
+        if (!isAdmin(token)) return forbidden();
+        PlatformSettings s = settings();
+        if (request.siteOpen() != null) s.setSiteOpen(request.siteOpen());
+        if (request.globalNoticeActive() != null) s.setGlobalNoticeActive(request.globalNoticeActive());
+        if (request.globalNoticeTitle() != null) s.setGlobalNoticeTitle(clean(request.globalNoticeTitle()));
+        if (request.globalNoticeMessage() != null) s.setGlobalNoticeMessage(clean(request.globalNoticeMessage()));
+        if (request.globalNoticeType() != null) s.setGlobalNoticeType(cleanStatus(request.globalNoticeType(), "INFO"));
+        if (request.closedTitle() != null) s.setClosedTitle(clean(request.closedTitle()));
+        if (request.closedMessage() != null) s.setClosedMessage(clean(request.closedMessage()));
+        return ResponseEntity.ok(platformSettings.save(s));
     }
 
     @GetMapping("/accounts")
@@ -129,9 +164,28 @@ public class PlatformAdminController {
                     row.put("slug", store.getSlug());
                     row.put("ownerId", store.getOwnerId());
                     row.put("category", store.getCategory());
+                    row.put("whatsapp", store.getWhatsapp());
+                    row.put("contactType", store.getContactType());
+                    row.put("contactValue", store.getContactValue());
+                    row.put("websiteUrl", store.getWebsiteUrl());
+                    row.put("description", store.getDescription());
+                    row.put("address", store.getAddress());
                     row.put("city", store.getCity());
                     row.put("state", store.getState());
+                    row.put("countryCode", store.getCountryCode());
                     row.put("countryName", store.getCountryName());
+                    row.put("openingHours", store.getOpeningHours());
+                    row.put("openingTime", store.getOpeningTime());
+                    row.put("closingTime", store.getClosingTime());
+                    row.put("openWeekdays", store.isOpenWeekdays());
+                    row.put("openSaturday", store.isOpenSaturday());
+                    row.put("openSunday", store.isOpenSunday());
+                    row.put("forceOpen", store.isForceOpen());
+                    row.put("forceClosed", store.isForceClosed());
+                    row.put("deliveryTime", store.getDeliveryTime());
+                    row.put("deliveryFee", store.getDeliveryFee());
+                    row.put("minimumOrderAmount", store.getMinimumOrderAmount());
+                    row.put("paymentMethods", store.getPaymentMethods());
                     row.put("active", store.isActive());
                     row.put("storeStatus", store.getStoreStatus());
                     row.put("billingStatus", store.getBillingStatus());
@@ -171,10 +225,30 @@ public class PlatformAdminController {
         if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
         if (request.name() != null && !request.name().isBlank()) store.setName(clean(request.name()));
+        if (request.slug() != null) store.setSlug(clean(request.slug()));
         if (request.category() != null) store.setCategory(clean(request.category()));
+        if (request.whatsapp() != null) store.setWhatsapp(onlyDigits(request.whatsapp()));
+        if (request.contactType() != null) store.setContactType(cleanStatus(request.contactType(), "WHATSAPP"));
+        if (request.contactValue() != null) store.setContactValue(clean(request.contactValue()));
+        if (request.websiteUrl() != null) store.setWebsiteUrl(clean(request.websiteUrl()));
+        if (request.description() != null) store.setDescription(clean(request.description()));
+        if (request.address() != null) store.setAddress(clean(request.address()));
         if (request.city() != null) store.setCity(clean(request.city()));
         if (request.state() != null) store.setState(clean(request.state()));
+        if (request.countryCode() != null) store.setCountryCode(cleanStatus(request.countryCode(), "BR"));
         if (request.countryName() != null) store.setCountryName(clean(request.countryName()));
+        if (request.openingHours() != null) store.setOpeningHours(clean(request.openingHours()));
+        if (request.openingTime() != null) store.setOpeningTime(clean(request.openingTime()));
+        if (request.closingTime() != null) store.setClosingTime(clean(request.closingTime()));
+        if (request.openWeekdays() != null) store.setOpenWeekdays(request.openWeekdays());
+        if (request.openSaturday() != null) store.setOpenSaturday(request.openSaturday());
+        if (request.openSunday() != null) store.setOpenSunday(request.openSunday());
+        if (request.forceOpen() != null) store.setForceOpen(request.forceOpen());
+        if (request.forceClosed() != null) store.setForceClosed(request.forceClosed());
+        if (request.deliveryTime() != null) store.setDeliveryTime(clean(request.deliveryTime()));
+        if (request.deliveryFee() != null) store.setDeliveryFee(request.deliveryFee());
+        if (request.minimumOrderAmount() != null) store.setMinimumOrderAmount(request.minimumOrderAmount());
+        if (request.paymentMethods() != null) store.setPaymentMethods(clean(request.paymentMethods()));
         if (request.storeStatus() != null) store.setStoreStatus(cleanStatus(request.storeStatus(), "OPEN"));
         if (request.billingStatus() != null) store.setBillingStatus(cleanStatus(request.billingStatus(), "OK"));
         if (request.active() != null) store.setActive(request.active());
@@ -243,9 +317,28 @@ public class PlatformAdminController {
         row.put("slug", store.getSlug());
         row.put("ownerId", store.getOwnerId());
         row.put("category", store.getCategory());
+        row.put("whatsapp", store.getWhatsapp());
+        row.put("contactType", store.getContactType());
+        row.put("contactValue", store.getContactValue());
+        row.put("websiteUrl", store.getWebsiteUrl());
+        row.put("description", store.getDescription());
+        row.put("address", store.getAddress());
         row.put("city", store.getCity());
         row.put("state", store.getState());
+        row.put("countryCode", store.getCountryCode());
         row.put("countryName", store.getCountryName());
+        row.put("openingHours", store.getOpeningHours());
+        row.put("openingTime", store.getOpeningTime());
+        row.put("closingTime", store.getClosingTime());
+        row.put("openWeekdays", store.isOpenWeekdays());
+        row.put("openSaturday", store.isOpenSaturday());
+        row.put("openSunday", store.isOpenSunday());
+        row.put("forceOpen", store.isForceOpen());
+        row.put("forceClosed", store.isForceClosed());
+        row.put("deliveryTime", store.getDeliveryTime());
+        row.put("deliveryFee", store.getDeliveryFee());
+        row.put("minimumOrderAmount", store.getMinimumOrderAmount());
+        row.put("paymentMethods", store.getPaymentMethods());
         row.put("active", store.isActive());
         row.put("storeStatus", store.getStoreStatus());
         row.put("billingStatus", store.getBillingStatus());
@@ -268,6 +361,14 @@ public class PlatformAdminController {
 
     private String clean(String value) {
         return value == null ? null : value.trim();
+    }
+
+    private String onlyDigits(String value) {
+        return value == null ? null : value.replaceAll("\\D+", "");
+    }
+
+    private PlatformSettings settings() {
+        return platformSettings.findById(1L).orElseGet(() -> platformSettings.save(new PlatformSettings()));
     }
 
     private String cleanStatus(String value, String fallback) {
