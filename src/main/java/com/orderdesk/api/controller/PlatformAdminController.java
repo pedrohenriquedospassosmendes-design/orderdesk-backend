@@ -5,8 +5,11 @@ import com.orderdesk.api.model.Store;
 import com.orderdesk.api.model.UserAccount;
 import com.orderdesk.api.repository.CustomerOrderRepository;
 import com.orderdesk.api.repository.ProductRepository;
+import com.orderdesk.api.repository.StoreLikeRepository;
 import com.orderdesk.api.repository.StoreRepository;
+import com.orderdesk.api.repository.StoreReviewRepository;
 import com.orderdesk.api.repository.UserAccountRepository;
+import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -27,19 +30,28 @@ public class PlatformAdminController {
     private final StoreRepository stores;
     private final ProductRepository products;
     private final CustomerOrderRepository orders;
+    private final StoreReviewRepository reviews;
+    private final StoreLikeRepository likes;
     private final Set<String> adminTokens = ConcurrentHashMap.newKeySet();
 
     @Value("${orderdesk.platform-admin.password:admin123}")
     private String adminPassword;
 
-    public PlatformAdminController(UserAccountRepository users, StoreRepository stores, ProductRepository products, CustomerOrderRepository orders) {
+    public PlatformAdminController(UserAccountRepository users, StoreRepository stores, ProductRepository products, CustomerOrderRepository orders, StoreReviewRepository reviews, StoreLikeRepository likes) {
         this.users = users;
         this.stores = stores;
         this.products = products;
         this.orders = orders;
+        this.reviews = reviews;
+        this.likes = likes;
     }
 
     public record AdminLoginRequest(String password) {}
+    public record AdminStoreUpdateRequest(String name, String category, String city, String state, String countryName,
+                                          String storeStatus, String billingStatus, Boolean active,
+                                          Boolean blockedForBilling, String planType, Integer monthlyOrderLimit,
+                                          Integer currentMonthOrders) {}
+    public record AdminAccountUpdateRequest(String name, String accountType, String platformRole, String city, String state, String countryName) {}
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody AdminLoginRequest request) {
@@ -125,6 +137,8 @@ public class PlatformAdminController {
                     row.put("billingStatus", store.getBillingStatus());
                     row.put("currentMonthOrders", store.getCurrentMonthOrders());
                     row.put("monthlyOrderLimit", store.getMonthlyOrderLimit());
+                    row.put("planType", store.getPlanType());
+                    row.put("blockedForBilling", store.isBlockedForBilling());
                     row.put("createdAt", store.getCreatedAt());
                     return row;
                 }).toList());
@@ -150,8 +164,115 @@ public class PlatformAdminController {
                 }).toList());
     }
 
+    @PatchMapping("/stores/{id}")
+    public ResponseEntity<?> updateStore(@PathVariable Long id, @RequestParam String token, @RequestBody AdminStoreUpdateRequest request) {
+        if (!isAdmin(token)) return forbidden();
+        var opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        Store store = opt.get();
+        if (request.name() != null && !request.name().isBlank()) store.setName(clean(request.name()));
+        if (request.category() != null) store.setCategory(clean(request.category()));
+        if (request.city() != null) store.setCity(clean(request.city()));
+        if (request.state() != null) store.setState(clean(request.state()));
+        if (request.countryName() != null) store.setCountryName(clean(request.countryName()));
+        if (request.storeStatus() != null) store.setStoreStatus(cleanStatus(request.storeStatus(), "OPEN"));
+        if (request.billingStatus() != null) store.setBillingStatus(cleanStatus(request.billingStatus(), "OK"));
+        if (request.active() != null) store.setActive(request.active());
+        if (request.blockedForBilling() != null) store.setBlockedForBilling(request.blockedForBilling());
+        if (request.planType() != null) store.setPlanType(cleanStatus(request.planType(), "FREE"));
+        if (request.monthlyOrderLimit() != null) store.setMonthlyOrderLimit(Math.max(0, request.monthlyOrderLimit()));
+        if (request.currentMonthOrders() != null) store.setCurrentMonthOrders(Math.max(0, request.currentMonthOrders()));
+        return ResponseEntity.ok(storeRow(stores.save(store)));
+    }
+
+    @PatchMapping("/stores/{id}/active")
+    public ResponseEntity<?> setStoreActive(@PathVariable Long id, @RequestParam String token, @RequestParam boolean active) {
+        if (!isAdmin(token)) return forbidden();
+        var opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        Store store = opt.get();
+        store.setActive(active);
+        return ResponseEntity.ok(storeRow(stores.save(store)));
+    }
+
+    @DeleteMapping("/stores/{id}")
+    @Transactional
+    public ResponseEntity<?> deleteStore(@PathVariable Long id, @RequestParam String token) {
+        if (!isAdmin(token)) return forbidden();
+        var opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        deleteStoreCascade(opt.get());
+        return ResponseEntity.ok(message("Loja excluida."));
+    }
+
+    @PatchMapping("/accounts/{id}")
+    public ResponseEntity<?> updateAccount(@PathVariable Long id, @RequestParam String token, @RequestBody AdminAccountUpdateRequest request) {
+        if (!isAdmin(token)) return forbidden();
+        var opt = users.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Conta nao encontrada."));
+        UserAccount user = opt.get();
+        if (request.name() != null && !request.name().isBlank()) user.setName(clean(request.name()));
+        if (request.accountType() != null) user.setAccountType(cleanStatus(request.accountType(), "store").toLowerCase());
+        if (request.platformRole() != null) user.setPlatformRole(cleanStatus(request.platformRole(), "USER"));
+        if (request.city() != null) user.setCity(clean(request.city()));
+        if (request.state() != null) user.setState(clean(request.state()));
+        if (request.countryName() != null) user.setCountryName(clean(request.countryName()));
+        users.save(user);
+        return ResponseEntity.ok(message("Conta atualizada."));
+    }
+
+    @DeleteMapping("/accounts/{id}")
+    @Transactional
+    public ResponseEntity<?> deleteAccount(@PathVariable Long id, @RequestParam String token) {
+        if (!isAdmin(token)) return forbidden();
+        var opt = users.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Conta nao encontrada."));
+        stores.findByOwnerIdOrderByCreatedAtDesc(id).forEach(this::deleteStoreCascade);
+        users.delete(opt.get());
+        return ResponseEntity.ok(message("Conta e lojas excluidas."));
+    }
+
     private boolean isAdmin(String token) {
         return token != null && !token.isBlank() && adminTokens.contains(token);
+    }
+
+    private Map<String, Object> storeRow(Store store) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", store.getId());
+        row.put("name", store.getName());
+        row.put("slug", store.getSlug());
+        row.put("ownerId", store.getOwnerId());
+        row.put("category", store.getCategory());
+        row.put("city", store.getCity());
+        row.put("state", store.getState());
+        row.put("countryName", store.getCountryName());
+        row.put("active", store.isActive());
+        row.put("storeStatus", store.getStoreStatus());
+        row.put("billingStatus", store.getBillingStatus());
+        row.put("currentMonthOrders", store.getCurrentMonthOrders());
+        row.put("monthlyOrderLimit", store.getMonthlyOrderLimit());
+        row.put("planType", store.getPlanType());
+        row.put("blockedForBilling", store.isBlockedForBilling());
+        row.put("createdAt", store.getCreatedAt());
+        return row;
+    }
+
+    private void deleteStoreCascade(Store store) {
+        Long id = store.getId();
+        orders.deleteByStoreId(id);
+        reviews.deleteByStoreId(id);
+        likes.deleteByStoreId(id);
+        products.deleteByStoreId(id);
+        stores.delete(store);
+    }
+
+    private String clean(String value) {
+        return value == null ? null : value.trim();
+    }
+
+    private String cleanStatus(String value, String fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        return value.trim().toUpperCase().replaceAll("[^A-Z0-9_\\-]", "");
     }
 
     private ResponseEntity<?> forbidden() {
