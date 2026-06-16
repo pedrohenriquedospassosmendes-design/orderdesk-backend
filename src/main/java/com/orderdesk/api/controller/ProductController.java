@@ -2,50 +2,53 @@ package com.orderdesk.api.controller;
 
 import com.orderdesk.api.dto.ProductRequest;
 import com.orderdesk.api.model.Product;
+import com.orderdesk.api.model.Store;
+import com.orderdesk.api.model.UserAccount;
 import com.orderdesk.api.repository.ProductRepository;
 import com.orderdesk.api.repository.StoreRepository;
+import com.orderdesk.api.repository.UserAccountRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api")
 public class ProductController {
     private final ProductRepository products;
     private final StoreRepository stores;
+    private final UserAccountRepository users;
 
-    public ProductController(ProductRepository products, StoreRepository stores) {
+    public ProductController(ProductRepository products, StoreRepository stores, UserAccountRepository users) {
         this.products = products;
         this.stores = stores;
+        this.users = users;
     }
 
     @GetMapping("/stores/{storeId}/products")
     public ResponseEntity<?> listByStoreId(@PathVariable Long storeId) {
-        if (stores.findById(storeId).isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+        if (stores.findById(storeId).isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         return ResponseEntity.ok(products.findByStoreIdOrderByCreatedAtDesc(storeId));
     }
 
     @GetMapping("/stores/slug/{slug}/products")
     public ResponseEntity<?> listBySlug(@PathVariable String slug) {
-        var store = stores.findBySlugIgnoreCase(slug).filter(s -> s.isActive());
-        if (store.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+        Optional<Store> store = stores.findBySlugIgnoreCase(slug).filter(Store::isActive);
+        if (store.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         return ResponseEntity.ok(products.findByStoreIdAndAvailableTrueOrderByCreatedAtDesc(store.get().getId()));
     }
 
     @PostMapping("/stores/{storeId}/products")
-    public ResponseEntity<?> create(@PathVariable Long storeId, @RequestBody ProductRequest request) {
-        var optStore = stores.findById(storeId);
-        if (optStore.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
-        if (request.ownerId == null || !request.ownerId.equals(optStore.get().getOwnerId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode cadastrar produto nesta loja."));
-        }
-        if (request.name == null || request.name.isBlank() || request.price == null) {
-            return ResponseEntity.badRequest().body(message("Nome e preço são obrigatórios."));
-        }
+    public ResponseEntity<?> create(@PathVariable Long storeId, @RequestParam String token, @RequestBody ProductRequest request) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> optStore = stores.findById(storeId);
+        if (optStore.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        if (!user.get().getId().equals(optStore.get().getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode cadastrar produto nesta loja."));
+        if (request.name == null || request.name.isBlank() || request.price == null) return ResponseEntity.badRequest().body(message("Nome e preco sao obrigatorios."));
         Product p = new Product();
         p.setStoreId(storeId);
         apply(p, request);
@@ -53,47 +56,52 @@ public class ProductController {
     }
 
     @PutMapping("/stores/{storeId}/products/{productId}")
-    public ResponseEntity<?> update(@PathVariable Long storeId, @PathVariable Long productId, @RequestBody ProductRequest request) {
-        var optStore = stores.findById(storeId);
-        if (optStore.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
-        if (request.ownerId == null || !request.ownerId.equals(optStore.get().getOwnerId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode editar produto nesta loja."));
-        }
-        var optProduct = products.findById(productId);
-        if (optProduct.isEmpty() || !optProduct.get().getStoreId().equals(storeId)) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto não encontrado."));
-        }
+    public ResponseEntity<?> update(@PathVariable Long storeId, @PathVariable Long productId, @RequestParam String token, @RequestBody ProductRequest request) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> optStore = stores.findById(storeId);
+        if (optStore.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        if (!user.get().getId().equals(optStore.get().getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode editar produto nesta loja."));
+        Optional<Product> optProduct = products.findById(productId);
+        if (optProduct.isEmpty() || !optProduct.get().getStoreId().equals(storeId)) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto nao encontrado."));
         Product p = optProduct.get();
         apply(p, request);
         return ResponseEntity.ok(products.save(p));
     }
 
-
-
     @PatchMapping("/products/{productId}/availability")
-    public ResponseEntity<?> setAvailability(@PathVariable Long productId, @RequestParam Long ownerId, @RequestParam boolean available) {
-        var optProduct = products.findById(productId);
-        if (optProduct.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto não encontrado."));
+    public ResponseEntity<?> setAvailability(@PathVariable Long productId, @RequestParam String token, @RequestParam boolean available) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Product> optProduct = products.findById(productId);
+        if (optProduct.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto nao encontrado."));
         Product p = optProduct.get();
-        var optStore = stores.findById(p.getStoreId());
-        if (optStore.isEmpty() || !ownerId.equals(optStore.get().getOwnerId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode alterar este produto."));
-        }
+        Optional<Store> optStore = stores.findById(p.getStoreId());
+        if (optStore.isEmpty() || !user.get().getId().equals(optStore.get().getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode alterar este produto."));
         p.setAvailable(available);
         return ResponseEntity.ok(products.save(p));
     }
 
     @DeleteMapping("/products/{productId}")
-    public ResponseEntity<?> delete(@PathVariable Long productId, @RequestParam Long ownerId) {
-        var optProduct = products.findById(productId);
-        if (optProduct.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto não encontrado."));
+    public ResponseEntity<?> delete(@PathVariable Long productId, @RequestParam String token) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Product> optProduct = products.findById(productId);
+        if (optProduct.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Produto nao encontrado."));
         Product p = optProduct.get();
-        var optStore = stores.findById(p.getStoreId());
-        if (optStore.isEmpty() || !ownerId.equals(optStore.get().getOwnerId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode excluir este produto."));
-        }
+        Optional<Store> optStore = stores.findById(p.getStoreId());
+        if (optStore.isEmpty() || !user.get().getId().equals(optStore.get().getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode excluir este produto."));
         products.delete(p);
-        return ResponseEntity.ok(message("Produto excluído."));
+        return ResponseEntity.ok(message("Produto excluido."));
+    }
+
+    private Optional<UserAccount> requireUser(String token) {
+        if (token == null || token.isBlank()) return Optional.empty();
+        return users.findBySessionToken(token);
+    }
+
+    private ResponseEntity<?> unauthorized() {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(message("Sessao expirada. Entre novamente."));
     }
 
     private void apply(Product p, ProductRequest request) {
@@ -109,6 +117,7 @@ public class ProductController {
 
     private String clean(String v) { return v == null ? null : v.trim(); }
     private Map<String, String> message(String text) { return Map.of("message", text); }
+
     private String cleanImage(String v) {
         if (v == null || v.isBlank()) return null;
         String clean = v.trim();

@@ -294,3 +294,22 @@ Para cliente:
 - termos de uso e política de privacidade;
 - logs e monitoramento;
 - testes automatizados.
+
+## Segurança da v70
+
+Esta versão reduz o risco de alteração indevida de lojas, produtos, pedidos e estatísticas.
+As rotas de lojista agora validam o `token` da sessão no backend e não confiam mais apenas no `ownerId` enviado pelo navegador.
+
+Rotas sensíveis como criar/editar/excluir loja, criar/editar/excluir produto, listar pedidos, alterar status de pedido e ver estatísticas do lojista exigem token válido.
+## Admin do dono v72
+
+O painel interno do dono fica no front em `admin-dono.html`.
+No backend, use a variavel de ambiente `PLATFORM_ADMIN_PASSWORD` no Render para definir a senha real do painel.
+Em teste local, a senha padrao e `admin123`.
+
+Rotas usadas:
+- `POST /api/platform-admin/login`
+- `GET /api/platform-admin/summary?token=...`
+- `GET /api/platform-admin/accounts?token=...`
+- `GET /api/platform-admin/stores?token=...`
+- `GET /api/platform-admin/orders?token=...`

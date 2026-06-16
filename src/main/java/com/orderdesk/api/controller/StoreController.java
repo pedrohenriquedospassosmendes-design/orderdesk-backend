@@ -2,13 +2,14 @@ package com.orderdesk.api.controller;
 
 import com.orderdesk.api.dto.StoreRequest;
 import com.orderdesk.api.model.Store;
+import com.orderdesk.api.model.StoreLike;
+import com.orderdesk.api.model.UserAccount;
 import com.orderdesk.api.repository.CustomerOrderRepository;
 import com.orderdesk.api.repository.ProductRepository;
-import com.orderdesk.api.repository.StoreRepository;
-import com.orderdesk.api.repository.UserAccountRepository;
-import com.orderdesk.api.repository.StoreReviewRepository;
 import com.orderdesk.api.repository.StoreLikeRepository;
-import com.orderdesk.api.model.StoreLike;
+import com.orderdesk.api.repository.StoreRepository;
+import com.orderdesk.api.repository.StoreReviewRepository;
+import com.orderdesk.api.repository.UserAccountRepository;
 import com.orderdesk.api.service.BillingService;
 import com.orderdesk.api.service.SlugService;
 import jakarta.transaction.Transactional;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/stores")
@@ -76,9 +78,19 @@ public class StoreController {
         return result;
     }
 
+    @GetMapping("/mine")
+    public ResponseEntity<?> mine(@RequestParam String token) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        return ResponseEntity.ok(stores.findByOwnerIdOrderByCreatedAtDesc(user.get().getId()).stream().map(billingService::refreshAndSave).toList());
+    }
+
     @GetMapping("/mine/{ownerId}")
-    public List<Store> mine(@PathVariable Long ownerId) {
-        return stores.findByOwnerIdOrderByCreatedAtDesc(ownerId).stream().map(billingService::refreshAndSave).toList();
+    public ResponseEntity<?> mineLegacy(@PathVariable Long ownerId, @RequestParam String token) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        if (!user.get().getId().equals(ownerId)) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode ver lojas de outra conta."));
+        return ResponseEntity.ok(stores.findByOwnerIdOrderByCreatedAtDesc(user.get().getId()).stream().map(billingService::refreshAndSave).toList());
     }
 
     @GetMapping("/slug/{slug}")
@@ -86,38 +98,37 @@ public class StoreController {
         return stores.findBySlugIgnoreCase(slug)
                 .filter(Store::isActive)
                 .<ResponseEntity<?>>map(store -> ResponseEntity.ok(billingService.refreshAndSave(store)))
-                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada.")));
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada.")));
     }
 
     @GetMapping("/{id}/billing")
-    public ResponseEntity<?> billing(@PathVariable Long id, @RequestParam Long ownerId) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+    public ResponseEntity<?> billing(@PathVariable Long id, @RequestParam String token) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
-        if (!ownerId.equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode ver esta loja."));
+        if (!user.get().getId().equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode ver esta loja."));
         return ResponseEntity.ok(billingService.summary(billingService.refreshAndSave(store)));
     }
 
     @PatchMapping("/{id}/billing/test-usage")
-    public ResponseEntity<?> setBillingUsageForTesting(@PathVariable Long id, @RequestParam Long ownerId, @RequestParam int used) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+    public ResponseEntity<?> setBillingUsageForTesting(@PathVariable Long id, @RequestParam String token, @RequestParam int used) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
-        if (!ownerId.equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode alterar esta loja."));
+        if (!user.get().getId().equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode alterar esta loja."));
         return ResponseEntity.ok(billingService.summary(billingService.setUsageForTesting(store, used)));
     }
-
 
     @PostMapping("/{id}/like")
     @Transactional
     public ResponseEntity<?> like(@PathVariable Long id, @RequestHeader(value = "X-User-Key", required = false) String userKey) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty() || !opt.get().isActive()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
-        }
-        if (userKey == null || userKey.isBlank()) {
-            return ResponseEntity.badRequest().body(message("Não foi possível identificar sua curtida."));
-        }
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty() || !opt.get().isActive()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
+        if (userKey == null || userKey.isBlank()) return ResponseEntity.badRequest().body(message("Nao foi possivel identificar sua curtida."));
         String cleanKey = userKey.trim();
         Store store = opt.get();
         if (likes.findByStoreIdAndUserKey(id, cleanKey).isPresent()) {
@@ -130,26 +141,17 @@ public class StoreController {
     }
 
     @PostMapping
-    public ResponseEntity<?> create(@RequestBody StoreRequest request) {
-        if (request.ownerId == null) {
-            return ResponseEntity.badRequest().body(message("Dono da loja inválido."));
-        }
-        var owner = users.findById(request.ownerId);
-        if (owner.isEmpty()) {
-            return ResponseEntity.badRequest().body(message("Dono da loja inválido."));
-        }
+    public ResponseEntity<?> create(@RequestParam String token, @RequestBody StoreRequest request) {
+        Optional<UserAccount> owner = requireUser(token);
+        if (owner.isEmpty()) return unauthorized();
         if (!"store".equalsIgnoreCase(owner.get().getAccountType())) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Crie uma conta de loja para cadastrar uma loja."));
         }
-        if (request.name == null || request.name.isBlank()) {
-            return ResponseEntity.badRequest().body(message("Nome da loja é obrigatório."));
-        }
-        if (stores.countByOwnerId(request.ownerId) >= 4) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(message("Limite de 4 lojas por conta atingido."));
-        }
+        if (request.name == null || request.name.isBlank()) return ResponseEntity.badRequest().body(message("Nome da loja e obrigatorio."));
+        if (stores.countByOwnerId(owner.get().getId()) >= 4) return ResponseEntity.status(HttpStatus.CONFLICT).body(message("Limite de 4 lojas por conta atingido."));
         Store store = new Store();
         apply(store, request);
-        store.setOwnerId(request.ownerId);
+        store.setOwnerId(owner.get().getId());
         store.setSlug(slugService.cleanOrGenerate(request.slug, request.name, null));
         store.setActive(true);
         billingService.refresh(store);
@@ -157,46 +159,46 @@ public class StoreController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<?> update(@PathVariable Long id, @RequestBody StoreRequest request) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+    public ResponseEntity<?> update(@PathVariable Long id, @RequestParam String token, @RequestBody StoreRequest request) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
-        if (request.ownerId == null || !request.ownerId.equals(store.getOwnerId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode editar esta loja."));
-        }
-        if (request.name == null || request.name.isBlank()) {
-            return ResponseEntity.badRequest().body(message("Nome da loja é obrigatório."));
-        }
+        if (!user.get().getId().equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode editar esta loja."));
+        if (request.name == null || request.name.isBlank()) return ResponseEntity.badRequest().body(message("Nome da loja e obrigatorio."));
         apply(store, request);
         store.setSlug(slugService.cleanOrGenerate(request.slug, request.name, id));
         return ResponseEntity.ok(stores.save(store));
     }
 
-
-
     @PatchMapping("/{id}/active")
-    public ResponseEntity<?> setActive(@PathVariable Long id, @RequestParam Long ownerId, @RequestParam boolean active) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+    public ResponseEntity<?> setActive(@PathVariable Long id, @RequestParam String token, @RequestParam boolean active) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
-        if (!ownerId.equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode alterar esta loja."));
+        if (!user.get().getId().equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode alterar esta loja."));
         store.setActive(active);
         return ResponseEntity.ok(stores.save(store));
     }
 
     @DeleteMapping("/{id}")
     @Transactional
-    public ResponseEntity<?> delete(@PathVariable Long id, @RequestParam Long ownerId) {
-        var opt = stores.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja não encontrada."));
+    public ResponseEntity<?> delete(@PathVariable Long id, @RequestParam String token) {
+        Optional<UserAccount> user = requireUser(token);
+        if (user.isEmpty()) return unauthorized();
+        Optional<Store> opt = stores.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(message("Loja nao encontrada."));
         Store store = opt.get();
-        if (!ownerId.equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Você não pode excluir esta loja."));
+        if (!user.get().getId().equals(store.getOwnerId())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(message("Voce nao pode excluir esta loja."));
         orders.deleteByStoreId(id);
         reviews.deleteByStoreId(id);
         likes.deleteByStoreId(id);
         products.deleteByStoreId(id);
         stores.delete(store);
-        return ResponseEntity.ok().body(message("Loja excluída."));
+        return ResponseEntity.ok().body(message("Loja excluida."));
     }
 
     private void apply(Store store, StoreRequest request) {
@@ -229,14 +231,21 @@ public class StoreController {
         store.setPaymentMethods(clean(request.paymentMethods));
     }
 
+    private Optional<UserAccount> requireUser(String token) {
+        if (token == null || token.isBlank()) return Optional.empty();
+        return users.findBySessionToken(token);
+    }
+
+    private ResponseEntity<?> unauthorized() {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(message("Sessao expirada. Entre novamente."));
+    }
+
     private String clean(String v) { return v == null ? null : v.trim(); }
 
     private String cleanImage(String v) {
         if (v == null || v.isBlank()) return null;
         String clean = v.trim();
-        if (clean.length() > 280000) {
-            throw new IllegalArgumentException("Imagem muito grande. Use uma imagem menor que 2 MB.");
-        }
+        if (clean.length() > 280000) throw new IllegalArgumentException("Imagem muito grande. Use uma imagem menor que 2 MB.");
         return clean;
     }
 
@@ -263,8 +272,7 @@ public class StoreController {
 
     private boolean matches(String value, String filter) {
         if (filter == null || filter.isBlank()) return true;
-        if (value == null) return false;
-        return value.trim().equalsIgnoreCase(filter.trim());
+        return value != null && value.trim().equalsIgnoreCase(filter.trim());
     }
 
     private int locationScore(Store store, String userCountry, String userState, String userCity) {
@@ -276,13 +284,8 @@ public class StoreController {
         return 0;
     }
 
-    private boolean isFilled(String value) {
-        return value != null && !value.isBlank();
-    }
-
-    private Map<String, String> message(String text) {
-        return Map.of("message", text);
-    }
+    private boolean isFilled(String value) { return value != null && !value.isBlank(); }
+    private Map<String, String> message(String text) { return Map.of("message", text); }
 
     private String cleanCountryCode(String value) {
         if (value == null || value.isBlank()) return "BR";
