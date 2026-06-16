@@ -204,18 +204,7 @@ public class PlatformAdminController {
         return ResponseEntity.ok(orders.findAll().stream()
                 .sorted(Comparator.comparing(CustomerOrder::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(300)
-                .map(order -> {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("id", order.getId());
-                    row.put("storeId", order.getStoreId());
-                    row.put("customerName", order.getCustomerName());
-                    row.put("customerEmail", order.getCustomerEmail());
-                    row.put("customerPhone", order.getCustomerPhone());
-                    row.put("total", order.getTotal());
-                    row.put("status", order.getStatus());
-                    row.put("createdAt", order.getCreatedAt());
-                    return row;
-                }).toList());
+                .map(this::orderRow).toList());
     }
 
     @PatchMapping("/stores/{id}")
@@ -348,6 +337,34 @@ public class PlatformAdminController {
         row.put("blockedForBilling", store.isBlockedForBilling());
         row.put("createdAt", store.getCreatedAt());
         return row;
+    }
+
+    private Map<String, Object> orderRow(CustomerOrder order) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", order.getId());
+        row.put("storeId", order.getStoreId());
+        row.put("storeName", storeName(order.getStoreId()));
+        row.put("customerName", order.getCustomerName());
+        row.put("customerEmail", order.getCustomerEmail());
+        row.put("customerPhone", order.getCustomerPhone());
+        row.put("customerAccountId", order.getCustomerAccountId());
+        row.put("paymentMethod", order.getPaymentMethod());
+        row.put("deliveryType", order.getDeliveryType());
+        row.put("subtotal", order.getSubtotal());
+        row.put("deliveryFee", order.getDeliveryFee());
+        row.put("platformFee", order.getPlatformFee());
+        row.put("total", order.getTotal());
+        row.put("status", order.getStatus());
+        row.put("createdAt", order.getCreatedAt());
+        return row;
+    }
+
+    private String storeName(Long storeId) {
+        if (storeId == null) return "Loja nao informada";
+        return stores.findById(storeId)
+                .map(Store::getName)
+                .filter(name -> name != null && !name.isBlank())
+                .orElse("Loja #" + storeId);
     }
 
     private void deleteStoreCascade(Store store) {
