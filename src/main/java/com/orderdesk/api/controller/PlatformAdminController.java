@@ -18,8 +18,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -86,18 +88,39 @@ public class PlatformAdminController {
     public ResponseEntity<?> summary(@RequestParam String token) {
         if (!isAdmin(token)) return forbidden();
 
-        BigDecimal totalOrdersValue = orders.findAll().stream()
+        List<CustomerOrder> allOrders = orders.findAll();
+        BigDecimal totalOrdersValue = allOrders.stream()
                 .map(CustomerOrder::getTotal)
                 .filter(value -> value != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalSubtotal = allOrders.stream()
+                .map(CustomerOrder::getSubtotal)
+                .filter(value -> value != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalDeliveryFees = allOrders.stream()
+                .map(CustomerOrder::getDeliveryFee)
+                .filter(value -> value != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalPlatformFees = allOrders.stream()
+                .map(CustomerOrder::getPlatformFee)
+                .filter(value -> value != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal averageTicket = allOrders.isEmpty()
+                ? BigDecimal.ZERO
+                : totalOrdersValue.divide(BigDecimal.valueOf(allOrders.size()), 2, RoundingMode.HALF_UP);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accounts", users.count());
         result.put("stores", stores.count());
         result.put("activeStores", stores.findAll().stream().filter(Store::isActive).count());
         result.put("products", products.count());
-        result.put("orders", orders.count());
+        result.put("orders", allOrders.size());
         result.put("totalOrdersValue", totalOrdersValue);
+        result.put("totalSubtotal", totalSubtotal);
+        result.put("totalDeliveryFees", totalDeliveryFees);
+        result.put("totalPlatformFees", totalPlatformFees);
+        result.put("platformProfit", totalPlatformFees);
+        result.put("averageTicket", averageTicket);
         result.put("nearLimitStores", stores.findAll().stream()
                 .filter(store -> !"BLOCKED".equalsIgnoreCase(store.getBillingStatus()))
                 .filter(store -> store.getCurrentMonthOrders() >= Math.max(1, store.getMonthlyOrderLimit() - 5))
